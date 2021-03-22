@@ -15,6 +15,7 @@
 package org.eclipse.persistence.internal.sessions;
 
 import java.util.*;
+import org.eclipse.persistence.internal.descriptors.OptimisticLockingPolicy;
 import org.eclipse.persistence.mappings.*;
 import org.eclipse.persistence.internal.databaseaccess.DatasourceCall;
 import org.eclipse.persistence.internal.helper.*;
@@ -262,17 +263,40 @@ public class CommitManager {
                     WriteObjectQuery commitQuery = null;
                     if (changeSetToWrite.isNew()) {
                         commitQuery = new InsertObjectQuery();
-                    } else {
+                        commitQuery.setIsExecutionClone(true);
+                        commitQuery.setDescriptor(descriptor);
+                        commitQuery.setObjectChangeSet(changeSetToWrite);
+                        commitQuery.setObject(objectToWrite);
+                        commitQuery.cascadeOnlyDependentParts();
+                        // removed checking session type to set cascade level
+                        // will always be a unitOfWork so we need to cascade dependent parts
+                        session.executeQuery(commitQuery);
+                    } else if (!changeSetToWrite.getChanges().isEmpty()) {
                         commitQuery = new UpdateObjectQuery();
+                        commitQuery.setIsExecutionClone(true);
+                        commitQuery.setDescriptor(descriptor);
+                        commitQuery.setObjectChangeSet(changeSetToWrite);
+                        commitQuery.setObject(objectToWrite);
+                        commitQuery.cascadeOnlyDependentParts();
+                        // removed checking session type to set cascade level
+                        // will always be a unitOfWork so we need to cascade dependent parts
+                        session.executeQuery(commitQuery);
+                    } else {
+                        ReadObjectQuery query = new ReadObjectQuery();
+                        query.setIsExecutionClone(true);
+                        query.setDescriptor(descriptor);
+                        query.setSelectionId(changeSetToWrite.id);
+                        query.setIsReadOnly(true);
+                        query.dontCheckCache();
+                        OptimisticLockingPolicy optimisticLockingPolicy = descriptor.getOptimisticLockingPolicy();
+                        if (optimisticLockingPolicy != null) {
+                            Object version = optimisticLockingPolicy.getWriteLockValue(objectToWrite, query.getSelectionId(), session);
+                            Object result = session.executeQuery(query);
+                            if (version != null && result != null && optimisticLockingPolicy.compareWriteLockValues(version, optimisticLockingPolicy.getWriteLockValue(result, query.getSelectionId(), session)) != 0) {
+                                throw OptimisticLockException.objectChangedSinceLastReadWhenQuerying(query);
+                            }
+                        }
                     }
-                    commitQuery.setIsExecutionClone(true);
-                    commitQuery.setDescriptor(descriptor);
-                    commitQuery.setObjectChangeSet(changeSetToWrite);
-                    commitQuery.setObject(objectToWrite);
-                    commitQuery.cascadeOnlyDependentParts();
-                    // removed checking session type to set cascade level
-                    // will always be a unitOfWork so we need to cascade dependent parts
-                    session.executeQuery(commitQuery);
                 }
             }
         }

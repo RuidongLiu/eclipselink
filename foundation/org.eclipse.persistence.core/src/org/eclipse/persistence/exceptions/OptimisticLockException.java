@@ -34,6 +34,7 @@ public class OptimisticLockException extends EclipseLinkException {
     public final static int OBJECT_CHANGED_SINCE_LAST_READ_WHEN_DELETING = 5003;
     public final static int NO_VERSION_NUMBER_WHEN_UPDATING = 5004;
     public final static int OBJECT_CHANGED_SINCE_LAST_READ_WHEN_UPDATING = 5006;
+    public final static int OBJECT_CHANGED_SINCE_LAST_READ_WHEN_QUERYING = 5012;
     public final static int MUST_HAVE_MAPPING_WHEN_IN_OBJECT = 5007;
     public final static int NEED_TO_MAP_JAVA_SQL_TIMESTAMP = 5008;
     public final static int UNWRAPPING_OBJECT_DELETED_SINCE_LAST_READ = 5009;
@@ -145,6 +146,12 @@ public class OptimisticLockException extends EclipseLinkException {
 
         OptimisticLockException optimisticLockException = new OptimisticLockException(ExceptionMessageGenerator.buildMessage(OptimisticLockException.class, OBJECT_CHANGED_SINCE_LAST_READ_WHEN_UPDATING, args), query);
         optimisticLockException.setErrorCode(OBJECT_CHANGED_SINCE_LAST_READ_WHEN_UPDATING);
+        return optimisticLockException;
+    }
+
+    public static OptimisticLockException objectChangedSinceLastReadWhenQuerying(Object object) {
+        OptimisticLockException optimisticLockException = new OptimisticLockException();
+        optimisticLockException.setErrorCode(OBJECT_CHANGED_SINCE_LAST_READ_WHEN_QUERYING);
         return optimisticLockException;
     }
 

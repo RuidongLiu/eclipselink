@@ -35,10 +35,8 @@ env:
   matrix:
     - TEST_TARGET=test-core
     - TEST_TARGET=test-jpa22
-    - TEST_TARGET=test-moxy
-    - TEST_TARGET=test-sdo
-    - TEST_TARGET="test-jpa-jse test-ext test-jpql test-wdf test-jpars test-dbws test-dbws-builder test-osgi"
-    - TEST_TARGET=build-distribution
+    - TEST_TARGET=test-jpa22-srg
+    - TEST_TARGET=test-perf
 
 jobs:
   allow_failures:
@@ -46,8 +44,6 @@ jobs:
 
 jdk:
   - openjdk8
-  - openjdk11
-  - openjdk14
 
 cache:
   directories:
