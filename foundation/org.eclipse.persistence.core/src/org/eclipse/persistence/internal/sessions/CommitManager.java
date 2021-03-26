@@ -15,6 +15,8 @@
 package org.eclipse.persistence.internal.sessions;
 
 import java.util.*;
+
+import org.eclipse.persistence.expressions.ExpressionBuilder;
 import org.eclipse.persistence.internal.descriptors.OptimisticLockingPolicy;
 import org.eclipse.persistence.mappings.*;
 import org.eclipse.persistence.internal.databaseaccess.DatasourceCall;
@@ -285,14 +287,22 @@ public class CommitManager {
                         ReadObjectQuery query = new ReadObjectQuery();
                         query.setIsExecutionClone(true);
                         query.setDescriptor(descriptor);
-                        query.setSelectionId(changeSetToWrite.id);
+                        query.setReferenceClass(objectToWrite.getClass());
                         query.setIsReadOnly(true);
                         query.dontCheckCache();
                         OptimisticLockingPolicy optimisticLockingPolicy = descriptor.getOptimisticLockingPolicy();
                         if (optimisticLockingPolicy != null) {
-                            Object version = optimisticLockingPolicy.getWriteLockValue(objectToWrite, query.getSelectionId(), session);
-                            Object result = session.executeQuery(query);
-                            if (version != null && result != null && optimisticLockingPolicy.compareWriteLockValues(version, optimisticLockingPolicy.getWriteLockValue(result, query.getSelectionId(), session)) != 0) {
+                            ExpressionBuilder builder = query.getExpressionBuilder();
+                            query.setSelectionCriteria(builder.getField(optimisticLockingPolicy.getWriteLockField()).equal(builder.getParameter(optimisticLockingPolicy.getWriteLockField())).and(
+                                    builder.getField(descriptor.getPrimaryKeyFields().get(0)).equal(builder.getParameter(descriptor.getPrimaryKeyFields().get(0)))
+                            ));
+                            query.addArgument(optimisticLockingPolicy.getWriteLockField().getQualifiedName());
+                            query.addArgument(descriptor.getPrimaryKeyFields().get(0).getQualifiedName());
+                            List args = new ArrayList();
+                            args.add(optimisticLockingPolicy.getWriteLockValue(objectToWrite, changeSetToWrite.id, session));
+                            args.add(changeSetToWrite.id);
+                            Object result = session.executeQuery(query, args);
+                            if (result == null) {
                                 throw OptimisticLockException.objectChangedSinceLastReadWhenQuerying(query);
                             }
                         }
