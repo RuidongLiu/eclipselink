@@ -284,7 +284,7 @@ public class CommitManager {
                         // will always be a unitOfWork so we need to cascade dependent parts
                         session.executeQuery(commitQuery);
                     } else {
-                        ReadObjectQuery query = new ReadObjectQuery();
+                        ReportQuery query = new ReportQuery();
                         query.setIsExecutionClone(true);
                         query.setDescriptor(descriptor);
                         query.setReferenceClass(objectToWrite.getClass());
@@ -301,8 +301,10 @@ public class CommitManager {
                             List args = new ArrayList();
                             args.add(optimisticLockingPolicy.getWriteLockValue(objectToWrite, changeSetToWrite.id, session));
                             args.add(changeSetToWrite.id);
+                            query.retrievePrimaryKeys();
                             Object result = session.executeQuery(query, args);
-                            if (result == null) {
+                            if (((Vector) result).isEmpty()) {
+                                getCommitState().put(objectToWrite, COMPLETE);
                                 throw OptimisticLockException.objectChangedSinceLastReadWhenQuerying(query);
                             }
                         }
