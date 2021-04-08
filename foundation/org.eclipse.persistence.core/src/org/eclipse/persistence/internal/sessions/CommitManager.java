@@ -15,7 +15,6 @@
 package org.eclipse.persistence.internal.sessions;
 
 import java.util.*;
-
 import org.eclipse.persistence.expressions.ExpressionBuilder;
 import org.eclipse.persistence.internal.descriptors.OptimisticLockingPolicy;
 import org.eclipse.persistence.mappings.*;
@@ -288,8 +287,9 @@ public class CommitManager {
                         query.setIsExecutionClone(true);
                         query.setDescriptor(descriptor);
                         query.setReferenceClass(objectToWrite.getClass());
-                        query.setIsReadOnly(true);
                         query.dontCheckCache();
+                        query.dontMaintainCache();
+                        query.setIsReadOnly(true);
                         OptimisticLockingPolicy optimisticLockingPolicy = descriptor.getOptimisticLockingPolicy();
                         if (optimisticLockingPolicy != null) {
                             ExpressionBuilder builder = query.getExpressionBuilder();
@@ -302,9 +302,9 @@ public class CommitManager {
                             args.add(optimisticLockingPolicy.getWriteLockValue(objectToWrite, changeSetToWrite.id, session));
                             args.add(changeSetToWrite.id);
                             query.retrievePrimaryKeys();
+                            query.returnSingleResult();
                             Object result = session.executeQuery(query, args);
-                            if (((Vector) result).isEmpty()) {
-                                getCommitState().put(objectToWrite, COMPLETE);
+                            if (result == null) {
                                 throw OptimisticLockException.objectChangedSinceLastReadWhenQuerying(query);
                             }
                         }
