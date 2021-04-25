@@ -299,13 +299,20 @@ public class CommitManager {
                         descriptor.getPrimaryKeyFields().get(0).getName() + ", " +
                         descriptor.getOptimisticLockingPolicy().getWriteLockField().getName() + " " +
                         "from " + descriptor.getDefaultTable().getName() + " where " + descriptor.getPrimaryKeyFields().get(0).getName() + " in (";
-                for (Object id : objectIdToVersion.keySet()) {
-                    batchString += ((id instanceof String) ? "'" + id.toString() + "'": id.toString()) + ", ";
+                for (int i = 0; i < objectIdToVersion.size(); ++i) {
+                    batchString += "#" + i + ", ";
                 }
                 batchString = batchString.substring(0, batchString.length() - 2);
                 batchString += ")";
                 SQLCall call = new SQLCall(batchString);
-                Vector<ArrayRecord> results = session.executeSelectingCall(call);
+                DataReadQuery query = new DataReadQuery();
+                query.setCall(call);
+                query.setIsExecutionClone(true);
+                for (int i = 0; i < objectIdToVersion.size(); ++i) {
+                    query.addArgument(Integer.toString(i));
+                }
+                List args = new ArrayList(objectIdToVersion.keySet());
+                Vector<ArrayRecord> results = (Vector<ArrayRecord>) session.executeQuery(query, args);
                 for (ArrayRecord record : results) {
                     Object objectId = record.get(descriptor.getPrimaryKeyFields().get(0).getName());
                     Object objectVersion = record.get(descriptor.getOptimisticLockingPolicy().getWriteLockField().getName());
