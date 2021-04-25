@@ -15,7 +15,7 @@
 package org.eclipse.persistence.internal.sessions;
 
 import java.util.*;
-import org.eclipse.persistence.expressions.ExpressionBuilder;
+
 import org.eclipse.persistence.internal.descriptors.OptimisticLockingPolicy;
 import org.eclipse.persistence.mappings.*;
 import org.eclipse.persistence.internal.databaseaccess.DatasourceCall;
@@ -254,6 +254,7 @@ public class CommitManager {
                     Collections.sort((List)changes);
                 }
             }
+            Map<Object, Object> objectIdToVersion = new HashMap<>();
             for (ObjectChangeSet changeSetToWrite : changes) {
                 Object objectToWrite = changeSetToWrite.getUnitOfWorkClone();
                 if (descriptor == null) {
@@ -283,31 +284,33 @@ public class CommitManager {
                         // will always be a unitOfWork so we need to cascade dependent parts
                         session.executeQuery(commitQuery);
                     } else {
-                        ReportQuery query = new ReportQuery();
-                        query.setIsExecutionClone(true);
-                        query.setDescriptor(descriptor);
-                        query.setReferenceClass(objectToWrite.getClass());
-                        query.dontCheckCache();
-                        query.dontMaintainCache();
-                        query.setIsReadOnly(true);
-                        OptimisticLockingPolicy optimisticLockingPolicy = descriptor.getOptimisticLockingPolicy();
-                        if (optimisticLockingPolicy != null) {
-                            ExpressionBuilder builder = query.getExpressionBuilder();
-                            query.setSelectionCriteria(builder.getField(optimisticLockingPolicy.getWriteLockField()).equal(builder.getParameter(optimisticLockingPolicy.getWriteLockField())).and(
-                                    builder.getField(descriptor.getPrimaryKeyFields().get(0)).equal(builder.getParameter(descriptor.getPrimaryKeyFields().get(0)))
-                            ));
-                            query.addArgument(optimisticLockingPolicy.getWriteLockField().getQualifiedName());
-                            query.addArgument(descriptor.getPrimaryKeyFields().get(0).getQualifiedName());
-                            List args = new ArrayList();
-                            args.add(optimisticLockingPolicy.getWriteLockValue(objectToWrite, changeSetToWrite.id, session));
-                            args.add(changeSetToWrite.id);
-                            query.retrievePrimaryKeys();
-                            query.returnSingleResult();
-                            Object result = session.executeQuery(query, args);
-                            if (result == null) {
-                                throw OptimisticLockException.objectChangedSinceLastReadWhenQuerying(query);
-                            }
+                        // use a large query to handle read locks
+                        OptimisticLockingPolicy policy = descriptor.getOptimisticLockingPolicy();
+                        if (policy != null) {
+                            Object objectId = changeSetToWrite.id;
+                            Object objectVersion = policy.getWriteLockValue(objectToWrite, changeSetToWrite.id, session);
+                            objectIdToVersion.put(objectId, objectVersion);
                         }
+                    }
+                }
+            }
+            if (!objectIdToVersion.isEmpty()) {
+                String batchString = "select " +
+                        descriptor.getPrimaryKeyFields().get(0).getName() + ", " +
+                        descriptor.getOptimisticLockingPolicy().getWriteLockField().getName() + " " +
+                        "from " + descriptor.getDefaultTable().getName() + " where " + descriptor.getPrimaryKeyFields().get(0).getName() + " in (";
+                for (Object id : objectIdToVersion.keySet()) {
+                    batchString += ((id instanceof String) ? "'" + id.toString() + "'": id.toString()) + ", ";
+                }
+                batchString = batchString.substring(0, batchString.length() - 2);
+                batchString += ")";
+                SQLCall call = new SQLCall(batchString);
+                Vector<ArrayRecord> results = session.executeSelectingCall(call);
+                for (ArrayRecord record : results) {
+                    Object objectId = record.get(descriptor.getPrimaryKeyFields().get(0).getName());
+                    Object objectVersion = record.get(descriptor.getOptimisticLockingPolicy().getWriteLockField().getName());
+                    if (objectVersion == null || !(objectVersion.equals(objectIdToVersion.get(objectId)))) {
+                        throw OptimisticLockException.batchStatementExecutionFailure();
                     }
                 }
             }
