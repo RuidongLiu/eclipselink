@@ -288,7 +288,15 @@ public class CommitManager {
                         OptimisticLockingPolicy policy = descriptor.getOptimisticLockingPolicy();
                         if (policy != null) {
                             Object objectId = changeSetToWrite.id;
+                            if (objectId instanceof Number) {
+                                // type cast because currently don't know do correct type cast in pgloader
+                                objectId = ((Number) objectId).longValue();
+                            }
                             Object objectVersion = policy.getWriteLockValue(objectToWrite, changeSetToWrite.id, session);
+                            if (objectVersion instanceof Number) {
+                                // type cast because currently don't know do correct type cast in pgloader
+                                objectVersion = ((Number) objectVersion).longValue();
+                            }
                             objectIdToVersion.put(objectId, objectVersion);
                         }
                     }
@@ -308,8 +316,17 @@ public class CommitManager {
                 Vector<ArrayRecord> results = session.executeSelectingCall(call);
                 for (ArrayRecord record : results) {
                     Object objectId = record.get(descriptor.getPrimaryKeyFields().get(0).getName());
+                    if (objectId instanceof Number) {
+                        // type cast because currently don't know do correct type cast in pgloader
+                        objectId = ((Number) objectId).longValue();
+                    }
                     Object objectVersion = record.get(descriptor.getOptimisticLockingPolicy().getWriteLockField().getName());
-                    if (objectVersion == null || !(objectVersion.equals(objectIdToVersion.get(objectId)))) {
+                    if (objectVersion instanceof Number) {
+                        // type cast because currently don't know do correct type cast in pgloader
+                        objectVersion = ((Number) objectVersion).longValue();
+                    }
+                    Object version = objectIdToVersion.get(objectId);
+                    if (objectVersion == null || !(objectVersion.equals(version))) {
                         throw OptimisticLockException.batchStatementExecutionFailure();
                     }
                 }
