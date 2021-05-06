@@ -273,7 +273,7 @@ public class CommitManager {
                         // removed checking session type to set cascade level
                         // will always be a unitOfWork so we need to cascade dependent parts
                         session.executeQuery(commitQuery);
-                    } else if (!changeSetToWrite.getChanges().isEmpty()) {
+                    } else if (!changeSetToWrite.getChanges().isEmpty() || changeSetToWrite.shouldModifyVersionField()) {
                         commitQuery = new UpdateObjectQuery();
                         commitQuery.setIsExecutionClone(true);
                         commitQuery.setDescriptor(descriptor);
@@ -313,8 +313,14 @@ public class CommitManager {
                 batchString = batchString.substring(0, batchString.length() - 2);
                 batchString += ")";
                 SQLCall call = new SQLCall(batchString);
-                Vector<ArrayRecord> results = session.executeSelectingCall(call);
-                for (ArrayRecord record : results) {
+                ReportQuery query = new ReportQuery();
+                query.setReferenceClass(descriptor.getJavaClass());
+                query.addAttribute(descriptor.getPrimaryKeyFields().get(0).getName());
+                query.addAttribute(descriptor.getOptimisticLockingPolicy().getWriteLockField().getName());
+                query.setCall(call);
+                query.setIsExecutionClone(true);
+                Vector<ReportQueryResult> results = (Vector) session.executeQuery(query);
+                for (ReportQueryResult record : results) {
                     Object objectId = record.get(descriptor.getPrimaryKeyFields().get(0).getName());
                     if (objectId instanceof Number) {
                         // type cast because currently don't know do correct type cast in pgloader
