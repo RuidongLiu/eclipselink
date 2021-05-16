@@ -16,6 +16,7 @@ package org.eclipse.persistence.internal.sessions;
 
 import java.util.*;
 
+import org.eclipse.persistence.expressions.ExpressionBuilder;
 import org.eclipse.persistence.internal.descriptors.OptimisticLockingPolicy;
 import org.eclipse.persistence.mappings.*;
 import org.eclipse.persistence.internal.databaseaccess.DatasourceCall;
@@ -26,6 +27,8 @@ import org.eclipse.persistence.exceptions.*;
 import org.eclipse.persistence.internal.localization.*;
 import org.eclipse.persistence.internal.queries.DatabaseQueryMechanism;
 import org.eclipse.persistence.descriptors.ClassDescriptor;
+
+import javax.xml.crypto.Data;
 
 /**
  * This class maintains a commit stack and resolves circular references.
@@ -238,6 +241,7 @@ public class CommitManager {
     /**
      * Commit changed of the objects of the class type in the change set.
      * This allows for the order of the classes to be processed optimally.
+     * LONG SELECT IN
      */
     protected void commitChangedObjectsForClassWithChangeSet(UnitOfWorkChangeSet uowChangeSet, Class theClass) {
         Map<ObjectChangeSet, ObjectChangeSet> objectChangesList = uowChangeSet.getObjectChanges().get(theClass);
@@ -274,6 +278,8 @@ public class CommitManager {
                         // will always be a unitOfWork so we need to cascade dependent parts
                         session.executeQuery(commitQuery);
                     } else if (!changeSetToWrite.getChanges().isEmpty() || changeSetToWrite.shouldModifyVersionField()) {
+                        // If the object was changed or we need to modify the version field
+                        // (using an optimistic_force_increment or pessimistic_force_increment lock), use an update query.
                         commitQuery = new UpdateObjectQuery();
                         commitQuery.setIsExecutionClone(true);
                         commitQuery.setDescriptor(descriptor);
@@ -284,7 +290,7 @@ public class CommitManager {
                         // will always be a unitOfWork so we need to cascade dependent parts
                         session.executeQuery(commitQuery);
                     } else {
-                        // use a large query to handle read locks
+                        // For objects we don't need to modify, add to hashmap which is used to build a large select query.
                         OptimisticLockingPolicy policy = descriptor.getOptimisticLockingPolicy();
                         if (policy != null) {
                             Object objectId = changeSetToWrite.id;
@@ -303,30 +309,35 @@ public class CommitManager {
                 }
             }
             if (!objectIdToVersion.isEmpty()) {
-                String batchString = "select " +
-                        descriptor.getPrimaryKeyFields().get(0).getName() + ", " +
-                        descriptor.getOptimisticLockingPolicy().getWriteLockField().getName() + " " +
-                        "from " + descriptor.getDefaultTable().getName() + " where " + descriptor.getPrimaryKeyFields().get(0).getName() + " in (";
+                // Build a select query to verify that no objects we read had their versions changed.
+                String idField = descriptor.getPrimaryKeyFields().get(0).getName();
+                String versionField = descriptor.getOptimisticLockingPolicy().getWriteLockField().getName();
+                String tableName = descriptor.getDefaultTable().getName();
+
+                String batchString = "select " + idField + ", " + versionField +
+                        " from " + tableName
+                        + " where " + idField + " in (";
                 for (Object id : objectIdToVersion.keySet()) {
-                    batchString += ((id instanceof String) ? "'" + id.toString() + "'": id.toString()) + ", ";
+                    String objectId = (id instanceof String) ? "'" + id.toString() + "'": id.toString();
+                    batchString += objectId + ", ";
                 }
                 batchString = batchString.substring(0, batchString.length() - 2);
                 batchString += ")";
                 SQLCall call = new SQLCall(batchString);
                 ReportQuery query = new ReportQuery();
                 query.setReferenceClass(descriptor.getJavaClass());
-                query.addAttribute(descriptor.getPrimaryKeyFields().get(0).getName());
-                query.addAttribute(descriptor.getOptimisticLockingPolicy().getWriteLockField().getName());
+                query.addAttribute(idField);
+                query.addAttribute(versionField);
                 query.setCall(call);
                 query.setIsExecutionClone(true);
                 Vector<ReportQueryResult> results = (Vector) session.executeQuery(query);
                 for (ReportQueryResult record : results) {
-                    Object objectId = record.get(descriptor.getPrimaryKeyFields().get(0).getName());
+                    Object objectId = record.get(idField);
                     if (objectId instanceof Number) {
                         // type cast because currently don't know do correct type cast in pgloader
                         objectId = ((Number) objectId).longValue();
                     }
-                    Object objectVersion = record.get(descriptor.getOptimisticLockingPolicy().getWriteLockField().getName());
+                    Object objectVersion = record.get(versionField);
                     if (objectVersion instanceof Number) {
                         // type cast because currently don't know do correct type cast in pgloader
                         objectVersion = ((Number) objectVersion).longValue();
@@ -339,6 +350,417 @@ public class CommitManager {
             }
         }
     }
+
+
+
+
+
+
+
+
+
+
+//
+//    /**
+//     * LONG SELECT OR PRIMARY KEY
+//     */
+//    protected void commitChangedObjectsForClassWithChangeSet(UnitOfWorkChangeSet uowChangeSet, Class theClass) {
+//        Map<ObjectChangeSet, ObjectChangeSet> objectChangesList = uowChangeSet.getObjectChanges().get(theClass);
+//        if (objectChangesList != null) {// may be no changes for that class type.
+//            ClassDescriptor descriptor = null;
+//            AbstractSession session = getSession();
+//            Collection<ObjectChangeSet> changes = objectChangesList.values();
+//            CommitOrderType order = ((UnitOfWorkImpl)session).getCommitOrder();
+//            if (order != CommitOrderType.NONE) {
+//                changes = new ArrayList(objectChangesList.values());
+//                if (order == CommitOrderType.CHANGES) {
+//                    Collections.sort((List)changes, new ObjectChangeSet.ObjectChangeSetComparator());
+//                } else {
+//                    Collections.sort((List)changes);
+//                }
+//            }
+//            Map<Object, Object> objectIdToVersion = new HashMap<>();
+//            for (ObjectChangeSet changeSetToWrite : changes) {
+//                Object objectToWrite = changeSetToWrite.getUnitOfWorkClone();
+//                if (descriptor == null) {
+//                    descriptor = session.getDescriptor(objectToWrite);
+//                }
+//                if (!isProcessedCommit(objectToWrite)) {
+//                    // Commit and resume on failure can cause a new change set to be in existing, so need to check here.
+//                    WriteObjectQuery commitQuery = null;
+//                    if (changeSetToWrite.isNew()) {
+//                        commitQuery = new InsertObjectQuery();
+//                        commitQuery.setIsExecutionClone(true);
+//                        commitQuery.setDescriptor(descriptor);
+//                        commitQuery.setObjectChangeSet(changeSetToWrite);
+//                        commitQuery.setObject(objectToWrite);
+//                        commitQuery.cascadeOnlyDependentParts();
+//                        // removed checking session type to set cascade level
+//                        // will always be a unitOfWork so we need to cascade dependent parts
+//                        session.executeQuery(commitQuery);
+//                    } else if (!changeSetToWrite.getChanges().isEmpty() || changeSetToWrite.shouldModifyVersionField()) {
+//                        commitQuery = new UpdateObjectQuery();
+//                        commitQuery.setIsExecutionClone(true);
+//                        commitQuery.setDescriptor(descriptor);
+//                        commitQuery.setObjectChangeSet(changeSetToWrite);
+//                        commitQuery.setObject(objectToWrite);
+//                        commitQuery.cascadeOnlyDependentParts();
+//                        // removed checking session type to set cascade level
+//                        // will always be a unitOfWork so we need to cascade dependent parts
+//                        session.executeQuery(commitQuery);
+//                    } else {
+//                        // use a large query to handle read locks
+//                        OptimisticLockingPolicy policy = descriptor.getOptimisticLockingPolicy();
+//                        if (policy != null) {
+//                            Object objectId = changeSetToWrite.id;
+//                            if (objectId instanceof Number) {
+//                                // type cast because currently don't know do correct type cast in pgloader
+//                                objectId = ((Number) objectId).longValue();
+//                            }
+//                            Object objectVersion = policy.getWriteLockValue(objectToWrite, changeSetToWrite.id, session);
+//                            if (objectVersion instanceof Number) {
+//                                // type cast because currently don't know do correct type cast in pgloader
+//                                objectVersion = ((Number) objectVersion).longValue();
+//                            }
+//                            objectIdToVersion.put(objectId, objectVersion);
+//                        }
+//                    }
+//                }
+//            }
+//            if (!objectIdToVersion.isEmpty()) {
+//                String idField = descriptor.getPrimaryKeyFields().get(0).getName();
+//                String versionField = descriptor.getOptimisticLockingPolicy().getWriteLockField().getName();
+//                String tableName = descriptor.getDefaultTable().getName();
+//
+//                String batchString = "select " + idField + ", " + versionField
+//                        + " from " + tableName + " where ";
+//                for (Object id : objectIdToVersion.keySet()) {
+//                    String objectId = ((id instanceof String) ? "'" + id.toString() + "'": id.toString());
+//                    batchString += "(" + idField + " = " + objectId + ") or ";
+//                }
+//                batchString = batchString.substring(0, batchString.length() - 4);
+//                SQLCall call = new SQLCall(batchString);
+//                ReportQuery query = new ReportQuery();
+//                query.setReferenceClass(descriptor.getJavaClass());
+//                query.addAttribute(idField);
+//                query.addAttribute(versionField);
+//                query.setCall(call);
+//                query.setIsExecutionClone(true);
+//                Vector<ReportQueryResult> results = (Vector) session.executeQuery(query);
+//                for (ReportQueryResult record : results) {
+//                    Object objectId = record.get(idField);
+//                    if (objectId instanceof Number) {
+//                        // type cast because currently don't know do correct type cast in pgloader
+//                        objectId = ((Number) objectId).longValue();
+//                    }
+//                    Object objectVersion = record.get(versionField);
+//                    if (objectVersion instanceof Number) {
+//                        // type cast because currently don't know do correct type cast in pgloader
+//                        objectVersion = ((Number) objectVersion).longValue();
+//                    }
+//                    Object version = objectIdToVersion.get(objectId);
+//                    if (objectVersion == null || !(objectVersion.equals(version))) {
+//                        throw OptimisticLockException.batchStatementExecutionFailure();
+//                    }
+//                }
+//            }
+//        }
+//    }
+
+
+
+
+
+
+
+
+
+
+//    /**
+//     * LONG SELECT OR BOTH KEYS
+//     */
+//    protected void commitChangedObjectsForClassWithChangeSet(UnitOfWorkChangeSet uowChangeSet, Class theClass) {
+//        Map<ObjectChangeSet, ObjectChangeSet> objectChangesList = uowChangeSet.getObjectChanges().get(theClass);
+//        if (objectChangesList != null) {// may be no changes for that class type.
+//            ClassDescriptor descriptor = null;
+//            AbstractSession session = getSession();
+//            Collection<ObjectChangeSet> changes = objectChangesList.values();
+//            CommitOrderType order = ((UnitOfWorkImpl)session).getCommitOrder();
+//            if (order != CommitOrderType.NONE) {
+//                changes = new ArrayList(objectChangesList.values());
+//                if (order == CommitOrderType.CHANGES) {
+//                    Collections.sort((List)changes, new ObjectChangeSet.ObjectChangeSetComparator());
+//                } else {
+//                    Collections.sort((List)changes);
+//                }
+//            }
+//            Map<Object, Object> objectIdToVersion = new HashMap<>();
+//            for (ObjectChangeSet changeSetToWrite : changes) {
+//                Object objectToWrite = changeSetToWrite.getUnitOfWorkClone();
+//                if (descriptor == null) {
+//                    descriptor = session.getDescriptor(objectToWrite);
+//                }
+//                if (!isProcessedCommit(objectToWrite)) {
+//                    // Commit and resume on failure can cause a new change set to be in existing, so need to check here.
+//                    WriteObjectQuery commitQuery = null;
+//                    if (changeSetToWrite.isNew()) {
+//                        commitQuery = new InsertObjectQuery();
+//                        commitQuery.setIsExecutionClone(true);
+//                        commitQuery.setDescriptor(descriptor);
+//                        commitQuery.setObjectChangeSet(changeSetToWrite);
+//                        commitQuery.setObject(objectToWrite);
+//                        commitQuery.cascadeOnlyDependentParts();
+//                        // removed checking session type to set cascade level
+//                        // will always be a unitOfWork so we need to cascade dependent parts
+//                        session.executeQuery(commitQuery);
+//                    } else if (!changeSetToWrite.getChanges().isEmpty() || changeSetToWrite.shouldModifyVersionField()) {
+//                        commitQuery = new UpdateObjectQuery();
+//                        commitQuery.setIsExecutionClone(true);
+//                        commitQuery.setDescriptor(descriptor);
+//                        commitQuery.setObjectChangeSet(changeSetToWrite);
+//                        commitQuery.setObject(objectToWrite);
+//                        commitQuery.cascadeOnlyDependentParts();
+//                        // removed checking session type to set cascade level
+//                        // will always be a unitOfWork so we need to cascade dependent parts
+//                        session.executeQuery(commitQuery);
+//                    } else {
+//                        // use a large query to handle read locks
+//                        OptimisticLockingPolicy policy = descriptor.getOptimisticLockingPolicy();
+//                        if (policy != null) {
+//                            Object objectId = changeSetToWrite.id;
+//                            if (objectId instanceof Number) {
+//                                // type cast because currently don't know do correct type cast in pgloader
+//                                objectId = ((Number) objectId).longValue();
+//                            }
+//                            Object objectVersion = policy.getWriteLockValue(objectToWrite, changeSetToWrite.id, session);
+//                            if (objectVersion instanceof Number) {
+//                                // type cast because currently don't know do correct type cast in pgloader
+//                                objectVersion = ((Number) objectVersion).longValue();
+//                            }
+//                            objectIdToVersion.put(objectId, objectVersion);
+//                        }
+//                    }
+//                }
+//            }
+//            if (!objectIdToVersion.isEmpty()) {
+//
+//                String idField = descriptor.getPrimaryKeyFields().get(0).getName();
+//                String versionField = descriptor.getOptimisticLockingPolicy().getWriteLockField().getName();
+//                String tableName = descriptor.getDefaultTable().getName();
+//
+//                OptimisticLockingPolicy policy = descriptor.getOptimisticLockingPolicy();
+//                String batchString = "select " + idField + ", " + versionField
+//                        + " from " + tableName + " where ";
+//
+//                for (Map.Entry<Object, Object> entry : objectIdToVersion.entrySet()) {
+//                    Object objectId = entry.getKey();
+//                    Object objectVersion = entry.getValue();
+//                    if (objectVersion instanceof Number) {
+//                        // type cast because currently don't know do correct type cast in pgloader
+//                        objectVersion = ((Number) objectVersion).longValue();
+//                    }
+//
+//
+//                    String id = (objectId instanceof String) ? "'" + objectId.toString() + "'" : objectId.toString();
+//
+//                    batchString += "(" + idField + " = " + id
+//                            + " and " + versionField + " = " + objectVersion
+//                            + ") or ";
+//                }
+//                batchString = batchString.substring(0, batchString.length() - 4);
+//                SQLCall call = new SQLCall(batchString);
+//                ReportQuery query = new ReportQuery();
+//                query.setReferenceClass(descriptor.getJavaClass());
+//                query.addAttribute(idField);
+//                query.addAttribute(versionField);
+//                query.setCall(call);
+//                query.setIsExecutionClone(true);
+//                Vector<ReportQueryResult> results = (Vector) session.executeQuery(query);
+//                if (results.size() < objectIdToVersion.size()) {
+//                    throw OptimisticLockException.batchStatementExecutionFailure();
+//                }
+//            }
+//        }
+//    }
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//    /**
+//     * SINGLE SELECT REPORT
+//     */
+//    protected void commitChangedObjectsForClassWithChangeSet(UnitOfWorkChangeSet uowChangeSet, Class theClass) {
+//        Map<ObjectChangeSet, ObjectChangeSet> objectChangesList = uowChangeSet.getObjectChanges().get(theClass);
+//        if (objectChangesList != null) {// may be no changes for that class type.
+//            ClassDescriptor descriptor = null;
+//            AbstractSession session = getSession();
+//            Collection<ObjectChangeSet> changes = objectChangesList.values();
+//            CommitOrderType order = ((UnitOfWorkImpl)session).getCommitOrder();
+//            if (order != CommitOrderType.NONE) {
+//                changes = new ArrayList(objectChangesList.values());
+//                if (order == CommitOrderType.CHANGES) {
+//                    Collections.sort((List)changes, new ObjectChangeSet.ObjectChangeSetComparator());
+//                } else {
+//                    Collections.sort((List)changes);
+//                }
+//            }
+//            for (ObjectChangeSet changeSetToWrite : changes) {
+//                Object objectToWrite = changeSetToWrite.getUnitOfWorkClone();
+//                if (descriptor == null) {
+//                    descriptor = session.getDescriptor(objectToWrite);
+//                }
+//                if (!isProcessedCommit(objectToWrite)) {
+//                    // Commit and resume on failure can cause a new change set to be in existing, so need to check here.
+//                    WriteObjectQuery commitQuery = null;
+//                    if (changeSetToWrite.isNew()) {
+//                        commitQuery = new InsertObjectQuery();
+//                        commitQuery.setIsExecutionClone(true);
+//                        commitQuery.setDescriptor(descriptor);
+//                        commitQuery.setObjectChangeSet(changeSetToWrite);
+//                        commitQuery.setObject(objectToWrite);
+//                        commitQuery.cascadeOnlyDependentParts();
+//                        // removed checking session type to set cascade level
+//                        // will always be a unitOfWork so we need to cascade dependent parts
+//                        session.executeQuery(commitQuery);
+//                    } else if (!changeSetToWrite.getChanges().isEmpty() || changeSetToWrite.shouldModifyVersionField()) {
+//                        commitQuery = new UpdateObjectQuery();
+//                        commitQuery.setIsExecutionClone(true);
+//                        commitQuery.setDescriptor(descriptor);
+//                        commitQuery.setObjectChangeSet(changeSetToWrite);
+//                        commitQuery.setObject(objectToWrite);
+//                        commitQuery.cascadeOnlyDependentParts();
+//                        // removed checking session type to set cascade level
+//                        // will always be a unitOfWork so we need to cascade dependent parts
+//                        session.executeQuery(commitQuery);
+//                    } else {
+//                        ReportQuery query = new ReportQuery();
+//                        query.setIsExecutionClone(true);
+//                        query.setDescriptor(descriptor);
+//                        query.setReferenceClass(objectToWrite.getClass());
+//                        query.dontCheckCache();
+//                        query.dontMaintainCache();
+//                        query.setIsReadOnly(true);
+//                        OptimisticLockingPolicy optimisticLockingPolicy = descriptor.getOptimisticLockingPolicy();
+//                        if (optimisticLockingPolicy != null) {
+//                            DatabaseField idField = descriptor.getPrimaryKeyFields().get(0);
+//                            DatabaseField versionField = optimisticLockingPolicy.getWriteLockField();
+//
+//                            ExpressionBuilder builder = query.getExpressionBuilder();
+//                            query.setSelectionCriteria(builder.getField(idField).equal(builder.getParameter(idField)).and(
+//                                    builder.getField(versionField).equal(builder.getParameter(versionField))
+//                            ));
+//
+//                            query.addArgument(idField.getQualifiedName());
+//                            query.addArgument(versionField.getQualifiedName());
+//
+//                            List args = new ArrayList();
+//                            args.add(changeSetToWrite.id);
+//                            args.add(optimisticLockingPolicy.getWriteLockValue(objectToWrite, changeSetToWrite.id, session));
+//                            query.retrievePrimaryKeys();
+//                            query.returnSingleResult();
+//                            Object result = session.executeQuery(query, args);
+//                            if (result == null) {
+//                                throw OptimisticLockException.objectChangedSinceLastReadWhenQuerying(query);
+//                            }
+//                        }
+//                    }
+//                }
+//            }
+//        }
+//    }
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//    /**
+//     * SINGLE SELECT NO REPORT
+//     */
+//    protected void commitChangedObjectsForClassWithChangeSet(UnitOfWorkChangeSet uowChangeSet, Class theClass) {
+//        Map<ObjectChangeSet, ObjectChangeSet> objectChangesList = uowChangeSet.getObjectChanges().get(theClass);
+//        if (objectChangesList != null) {// may be no changes for that class type.
+//            ClassDescriptor descriptor = null;
+//            AbstractSession session = getSession();
+//            Collection<ObjectChangeSet> changes = objectChangesList.values();
+//            CommitOrderType order = ((UnitOfWorkImpl)session).getCommitOrder();
+//            if (order != CommitOrderType.NONE) {
+//                changes = new ArrayList(objectChangesList.values());
+//                if (order == CommitOrderType.CHANGES) {
+//                    Collections.sort((List)changes, new ObjectChangeSet.ObjectChangeSetComparator());
+//                } else {
+//                    Collections.sort((List)changes);
+//                }
+//            }
+//            for (ObjectChangeSet changeSetToWrite : changes) {
+//                Object objectToWrite = changeSetToWrite.getUnitOfWorkClone();
+//                if (descriptor == null) {
+//                    descriptor = session.getDescriptor(objectToWrite);
+//                }
+//                if (!isProcessedCommit(objectToWrite)) {
+//                    // Commit and resume on failure can cause a new change set to be in existing, so need to check here.
+//                    WriteObjectQuery commitQuery = null;
+//                    if (changeSetToWrite.isNew()) {
+//                        commitQuery = new InsertObjectQuery();
+//                        commitQuery.setIsExecutionClone(true);
+//                        commitQuery.setDescriptor(descriptor);
+//                        commitQuery.setObjectChangeSet(changeSetToWrite);
+//                        commitQuery.setObject(objectToWrite);
+//                        commitQuery.cascadeOnlyDependentParts();
+//                        // removed checking session type to set cascade level
+//                        // will always be a unitOfWork so we need to cascade dependent parts
+//                        session.executeQuery(commitQuery);
+//                    } else if (!changeSetToWrite.getChanges().isEmpty() || changeSetToWrite.shouldModifyVersionField()) {
+//                        commitQuery = new UpdateObjectQuery();
+//                        commitQuery.setIsExecutionClone(true);
+//                        commitQuery.setDescriptor(descriptor);
+//                        commitQuery.setObjectChangeSet(changeSetToWrite);
+//                        commitQuery.setObject(objectToWrite);
+//                        commitQuery.cascadeOnlyDependentParts();
+//                        // removed checking session type to set cascade level
+//                        // will always be a unitOfWork so we need to cascade dependent parts
+//                        session.executeQuery(commitQuery);
+//                    } else {
+//                        ReadObjectQuery query = new ReadObjectQuery();
+//                        query.setIsExecutionClone(true);
+//                        query.setDescriptor(descriptor);
+//                        query.setReferenceClass(objectToWrite.getClass());
+//                        query.setIsReadOnly(true);
+//                        query.dontCheckCache();
+//                        OptimisticLockingPolicy optimisticLockingPolicy = descriptor.getOptimisticLockingPolicy();
+//                        if (optimisticLockingPolicy != null) {
+//                            DatabaseField idField = descriptor.getPrimaryKeyFields().get(0);
+//                            DatabaseField versionField = optimisticLockingPolicy.getWriteLockField();
+//
+//
+//                            ExpressionBuilder builder = query.getExpressionBuilder();
+//                            query.setSelectionCriteria(builder.getField(idField).equal(builder.getParameter(idField)).and(
+//                                    builder.getField(versionField).equal(builder.getParameter(versionField))
+//                            ));
+//                            query.addArgument(idField.getQualifiedName());
+//                            query.addArgument(versionField.getQualifiedName());
+//                            List args = new ArrayList();
+//                            args.add(changeSetToWrite.id);
+//                            args.add(optimisticLockingPolicy.getWriteLockValue(objectToWrite, changeSetToWrite.id, session));
+//                            Object result = session.executeQuery(query, args);
+//                            if (result == null) {
+//                                throw OptimisticLockException.objectChangedSinceLastReadWhenQuerying(query);
+//                            }
+//                        }
+//                    }
+//                }
+//            }
+//        }
+//    }
 
     /**
      * delete all of the objects as a single transaction.
